@@ -29,6 +29,7 @@ gateway слушает только `127.0.0.1`.
 | Все порты (в т.ч. Postgres, RabbitMQ) торчали наружу | наружу только nginx; gateway на `127.0.0.1:3000` |
 | При ошибке подключения к БД процесс висел без сервера | `process.exit(1)` + `restart: unless-stopped` |
 | Нет точки для проверки работоспособности | `GET /health` в gateway |
+| `download.docker.com` и CDN Docker Hub недоступны из Yandex Cloud | Docker из репозитория Ubuntu, образы через зеркало `dockerhub.timeweb.cloud` (`/etc/docker/daemon.json`) |
 | gateway скачивал `tsx` при каждом старте контейнера | `tsx` ставится при сборке образа; добавлен `.dockerignore` |
 
 ## Шаги развёртывания
