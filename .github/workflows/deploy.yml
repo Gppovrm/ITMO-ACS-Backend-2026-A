@@ -1,0 +1,99 @@
+# ДЗ6: автоматическое развёртывание бэкенда на удалённый сервер.
+# Триггер — push в ветку hw6 с изменениями в каталоге приложения (или ручной запуск).
+name: Deploy restaurant-booking
+
+on:
+  push:
+    branches: [hw6]
+    paths:
+      - "БР1.1/Савченко Анастасия/labs/lab4/**"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  APP_SRC: "БР1.1/Савченко Анастасия/labs/lab4"
+  APP_DIR: /opt/restaurant-booking
+
+jobs:
+  build:
+    name: Сборка и проверка образов
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Проверка docker-compose.yml
+        working-directory: ${{ env.APP_SRC }}
+        run: |
+          printf 'DB_PASS=ci\nJWT_SECRET=ci\n' > .env
+          docker compose config -q
+
+      - name: Сборка образов (включает компиляцию TypeScript)
+        working-directory: ${{ env.APP_SRC }}
+        run: docker compose build
+
+      - name: Смоук-тест стека в CI
+        working-directory: ${{ env.APP_SRC }}
+        run: |
+          docker compose up -d
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/health && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:3000/api/v1/restaurants
+          docker compose down -v
+
+  deploy:
+    name: Деплой на сервер
+    needs: build
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Настройка SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_PORT: ${{ secrets.SSH_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host server
+            HostName $SSH_HOST
+            Port $SSH_PORT
+            User ${{ secrets.SSH_USER }}
+            IdentityFile ~/.ssh/id_deploy
+            IdentitiesOnly yes
+          EOF
+
+      - name: Копирование кода на сервер
+        run: |
+          rsync -az --delete \
+            --exclude '.env' --exclude 'node_modules' --exclude 'dist' \
+            "$APP_SRC/" "server:$APP_DIR/"
+
+      - name: Запись .env из секретов
+        env:
+          DB_PASS: ${{ secrets.DB_PASS }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |
+          printf 'DB_USER=postgres\nDB_PASS=%s\nJWT_SECRET=%s\n' "$DB_PASS" "$JWT_SECRET" \
+            | ssh server "umask 077 && cat > $APP_DIR/.env"
+
+      - name: Перезапуск контейнеров
+        run: ssh server "bash $APP_DIR/scripts/deploy.sh"
+
+      - name: Проверка доступности снаружи (через nginx)
+        run: |
+          for i in $(seq 1 10); do
+            curl -fsS "http://${{ secrets.SSH_HOST }}/health" && exit 0
+            sleep 3
+          done
+          exit 1
