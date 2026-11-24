@@ -1,0 +1,71 @@
+# Продовая конфигурация для удалённого сервера.
+# Наружу (и только на 127.0.0.1) открыт лишь api-gateway — к нему ходит nginx.
+# Секреты берутся из файла .env рядом (см. .env.example).
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASS:?задайте DB_PASS в .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # создаёт auth_db, restaurant_db, booking_db при первом запуске
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 5s
+      retries: 10
+
+  auth:
+    build: ./auth-service
+    restart: unless-stopped
+    environment: &db
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${DB_USER:-postgres}
+      DB_PASS: ${DB_PASS}
+      JWT_SECRET: ${JWT_SECRET:?задайте JWT_SECRET в .env}
+      DB_NAME: auth_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  restaurant:
+    build: ./restaurant-service
+    restart: unless-stopped
+    environment:
+      <<: *db
+      DB_NAME: restaurant_db
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  booking:
+    build: ./booking-service
+    restart: unless-stopped
+    environment:
+      <<: *db
+      DB_NAME: booking_db
+      AUTH_URL: http://auth:8001
+      RESTAURANT_URL: http://restaurant:8002
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  gateway:
+    build: ./api-gateway
+    restart: unless-stopped
+    environment:
+      AUTH_URL: http://auth:8001
+      RESTAURANT_URL: http://restaurant:8002
+      BOOKING_URL: http://booking:8003
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - auth
+      - restaurant
+      - booking
+
+volumes:
+  pgdata:
